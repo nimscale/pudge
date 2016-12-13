@@ -74,7 +74,7 @@ type
 
   # every connection has it's personal context
   Context = ref object
-    subscribers   : seq[Subscriber]
+    hasReplica: bool
     #clientId: int
 
   SophiaParams = object
@@ -96,6 +96,12 @@ type
     masterPort: int32
     sophiaParams: seq[SophiaParams]
     expectation: Expectation
+
+  RepMsg = ref object
+    key   : string
+    value : string
+    cmd   : Cmd
+
 # enums
   Cmd = enum
     cmdSet = "set",
@@ -138,6 +144,7 @@ var replicationPort: int = 0
 var glock: Lock
 var die : bool# global var?
 var gclientscounter {.guard: glock.}: int
+var replicationChannel: TChannel[RepMsg]
 
 #contants
 const NL = chr(13) & chr(10)
@@ -212,7 +219,7 @@ proc sendString(client: Socket,str: string):void=
     closeClient(client)
 
 
-proc processSet(client: Socket, params: seq[string], asAdd: bool):void=
+proc processSet(client: Socket, context: Context, params: seq[string], asAdd: bool):void=
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
@@ -277,7 +284,9 @@ proc processSet(client: Socket, params: seq[string], asAdd: bool):void=
       else:
         if not noreply:
           sendStatus(client, Status.stored)
-        processSubscribers( proc(s: Socket): int = setNoreply(s, key, val))
+        if context.hasReplica:
+          # processSubscribers( proc(s: Socket): int = setNoreply(s, key, val))
+          replicationChannel.send(RepMsg(key: key, value: val, cmd: Cmd.cmdSet))
     else:
       if client != nil:
         sendStatus(client, Status.notStored)
@@ -363,7 +372,7 @@ proc processGet(client: Socket,params: seq[string]):void=
   finally:
     dealloc(buffer)
 
-proc processDelete(client: Socket, params: seq[string]): void =
+proc processDelete(client: Socket, context: Context, params: seq[string]): void =
   ## delete key [noreply]
   ## response variants:
   ## DELETED
@@ -403,7 +412,9 @@ proc processDelete(client: Socket, params: seq[string]): void =
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
       var res = db.delete(o)
 
-      processSubscribers( proc(s: Socket): int = deleteNoreply(s, key))
+      if context.hasReplica:
+        #processSubscribers( proc(s: Socket): int = deleteNoreply(s, key))
+        replicationChannel.send(RepMsg(key: key, value: nil, cmd: Cmd.cmdDelete))
 
       if not noreply:
         if res == 0:
@@ -674,7 +685,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
     dealloc(buffer)
     discard destroy(cursor)
 
-proc parseLine(client: Socket, line: string):bool =
+proc parseLine(client: Socket, context: Context, line: string):bool =
   result = false
   let
     params = splitWhitespace(line & "")
@@ -682,16 +693,16 @@ proc parseLine(client: Socket, line: string):bool =
   # debug(line)
   case command:
     of $Cmd.cmdSet:
-      processSet(client, params, false)
+      processSet(client, context, params, false)
     of $Cmd.cmdAdd:
-      processSet(client, params, true)
+      processSet(client, context, params, true)
     of $Cmd.cmdGet:
       if params.len > 1 and params[1].contains('*'):
         processKeyValues(client, params)
       else:
         processGet(client,params)
     of $Cmd.cmdDelete:
-      processDelete(client, params)  
+      processDelete(client, context, params)  
     of $Cmd.cmdEcho:
       client.sendString(line & NL)
     of $Cmd.cmdStat:
@@ -721,8 +732,8 @@ proc parseLine(client: Socket, line: string):bool =
       sendStatus(client,Status.error)
   return result
 
-proc processClient(client: Socket) =
-  #var context = Context(subscribers: @[], clientId: clientId)
+proc processClient(client: Socket, hasReplica: bool) =
+  var context = Context(hasReplica: hasReplica)
   #try:
     #if replicationAddress[].len > 0 and replicationPort > 0:
       #var socket: Socket = newClient(replicationAddress[], replicationPort)
@@ -746,7 +757,7 @@ proc processClient(client: Socket) =
       if die:
         break
     if line != "":
-      let stop = parseLine(client, line)
+      let stop = parseLine(client, context, line)
       if stop:
         break
     else:
@@ -922,6 +933,30 @@ proc readCfg*():Config  =
     sphList.add(SophiaParams(key:"db",val:"db"))
     return Config(address: "127.0.0.1", port: 11213, debug:false, sophiaParams : sphList)
 
+proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
+  var socket: Socket = newClient(replicaAddr.host, replicaAddr.port)
+  while true:
+    var msg = replicationChannel.recv()
+    try:
+      let status = 
+        case msg.cmd:
+          of Cmd.cmdSet:
+            socket.setNoreply(msg.key, msg.value)
+          of Cmd.cmdDelete:
+            socket.deleteNoreply(msg.key)
+          else:
+            debug("Unsupported replication cmd" & $msg.cmd)
+            0
+      if status < 0:
+        debug("Replica connection error, reconnect...")
+        socket = newClient(replicaAddr.host, replicaAddr.port)
+    except IOError:
+      # TODO: looks like replica is down. 
+      # Save all messages to the disk and resend they after successfull connection
+      debug("Replica communication IO error, reconnect...")
+      socket = newClient(replicaAddr.host, replicaAddr.port)
+    
+
 proc serve*(conf:Config) =
   ## run server with Config
   initVars(conf)
@@ -938,7 +973,14 @@ proc serve*(conf:Config) =
   setSockOpt(server.socket, OptReusePort, true)
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
-  echo("Server initialised!")
+  echo("Server started on " & conf.address & ":" & $conf.port)
+
+  var hasReplica = false
+  if (conf.replicationPort > 0):
+    replicationChannel.open()
+    var t: Thread[tuple[host: string, port: int]]
+    createThread(t, replicationThread, (conf.replicationAddress, conf.replicationPort.int))
+    hasReplica = true
 
   var clients: seq[tuple[socket: Socket, clientId: int]] = @[]
   #proc deleteClientById(clientId: int): bool = 
@@ -967,9 +1009,9 @@ proc serve*(conf:Config) =
         inc(gclientscounter)
         echo "Clients count:",$gclientscounter
       if DEBUG:
-        processClient(client)
+        processClient(client, hasReplica)
       else:
-        spawn processClient(client)
+        spawn processClient(client, hasReplica)
     except:
       echo "exception in serve:",$client.getSocketError()
       closeClient(client)
