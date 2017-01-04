@@ -1,5 +1,5 @@
 ## Pudge db implements a high-level cross-platform tcp sockets interface to sophia db.
-## 
+##
 ##
 ## Building a server
 ## =================
@@ -25,9 +25,9 @@
 ##   value
 ##   #print:
 ##   STORED
-##   
+##
 ##   get key
-##   
+##
 ##   #print:
 ##   VALUE hello 0 5
 ##   world
@@ -35,11 +35,11 @@
 ##   #where 5 - size in bytes
 ##   #value on next line
 ##   #end
-##   
-##   gracefully stop server from command line: 
+##
+##   gracefully stop server from command line:
 ##   echo die|nc 0 11213 && nc 0 11213
 ##
-## Or use any driver with memcached text protocol 
+## Or use any driver with memcached text protocol
 ## support: https://github.com/memcached/memcached/blob/master/doc/protocol.txt
 
 import
@@ -64,13 +64,13 @@ import
 {.experimental.}
 
 # types
-type 
+type
   Server = ref object
     socket  : Socket
     #closedClientIds : SharedList[int]
     #clientsCounter: int # only incremented
     #activeClients: int
-    
+
   Subscriber = ref object
     socket: Socket
     address: string
@@ -125,8 +125,8 @@ type
     theEnd = "END",
     value = "VALUE"
     deleted = "DELETED"
-    notFound = "NOT_FOUND"  
-  
+    notFound = "NOT_FOUND"
+
   Engine = enum
     engMemory = "MEMORY",
     engSophia = "SOPHIA"
@@ -158,6 +158,7 @@ var L: Lock
 
 proc processSubscribers( process: proc(s: Socket): int) =
   let dummy=0
+
   #echo("unimplemented")
   #[
   if context.subscribers.len > 0:
@@ -181,7 +182,7 @@ proc processSubscribers( process: proc(s: Socket): int) =
         try:
           var socket: Socket = newClient(s.address, s.port)
           discard process(socket) # TODO: do something in case of sending failure (res < 0)
-          s.socket = socket  
+          s.socket = socket
         except IOError:
           s.retryCooldown = cast[int](getTime()) + 10 # looks like a replica is down, delay next try
         ]#
@@ -223,8 +224,8 @@ proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool
   ## set command example
   ## set key 0 0 5\10\13value\10\13
   ## Response: STORED or ERROR
-  ## 
-  ## In addition to standard memcached protocol, this command supports optional 
+  ##
+  ## In addition to standard memcached protocol, this command supports optional
   ## "noreply" argument for replication purpose:
   ## set key 0 0 5 noreply\10\13value\10\13
   ## <nothing responds>
@@ -240,7 +241,7 @@ proc processSet(client: Socket, config: Config, params: seq[string], asAdd: bool
       noreply = true
     else:
       sendStatus(client, Status.error)
-      return  
+      return
 
   try:
     size = parseInt(params[4])
@@ -304,8 +305,8 @@ proc processGet(client: Socket,params: seq[string]):void=
     debug("wrong params for get command")
     sendStatus(client, Status.error)
     return
-  var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1) 
-  var bufferPos = 0 
+  var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1)
+  var bufferPos = 0
   var buffer = cast[ptr array[0, char]](createU(char, bufferLen))
   for i in 1..(params.len - 1):
     if i mod cmdGetBatchSize == 0:
@@ -393,7 +394,7 @@ proc processDelete(client: Socket, config: Config, params: seq[string]): void =
       noreply = true
     else:
       sendStatus(client, Status.error)
-      return 
+      return
 
   case CUR_ENGINE:
     of Engine.engMemory:
@@ -444,7 +445,7 @@ proc processStat( client: Socket, asGetResponse: bool = false):void =
       var cursor = env.getobject(nil)
       var o:pointer
       o = cursor.get(o)
-      
+
       while o != nil:
         var size:cint = 0
         var keyPointer = o.getstring("key".cstring, addr size)
@@ -469,13 +470,13 @@ proc processStat( client: Socket, asGetResponse: bool = false):void =
 
 proc processEnv*(client: Socket,params: seq[string]):void =
   ## env command param1 [param2]
-  ## 
+  ##
   ## get or set sophia params
   ##
   ## .. code-block:: Nim
-  ## 
+  ##
   ##  available commands:
-  ## 
+  ##
   ##     getint
   ##     setint
   ##     getstring
@@ -537,7 +538,7 @@ proc processSub*(client: Socket,params: seq[string]):void =
   ##  now all changes on 11213 server will be sent to 11214 sever
   ##  You may subscribe pool of servers
   ##  You may subscribe another server to subscribed server and so on
-  ##  You may subscribe on the fly, but then you must delivery data from master server to subscribed 
+  ##  You may subscribe on the fly, but then you must delivery data from master server to subscribed
   ##  via backup or programmaticaly
   var res = ""
   if params.len<3:
@@ -564,10 +565,10 @@ proc processSub*(client: Socket,params: seq[string]):void =
       res = $Status.error
   client.send($res & NL)
 ]#
-proc processKeys(client: Socket, params: seq[string]): void = 
+proc processKeys(client: Socket, params: seq[string]): void =
   ## Simplified analogue of Redis KEYS command. Wildcard required.
   ## For example get all db keys:
-  ## KEYS * 
+  ## KEYS *
   ## firstkey
   ## secondkey
   ## ...
@@ -593,7 +594,7 @@ proc processKeys(client: Socket, params: seq[string]): void =
   var o = document(db)
   if pattern.len > 0:
     discard o.setstring("prefix".cstring, addr pattern[0], (pattern.len).cint)
-  o = cursor.get(o)  
+  o = cursor.get(o)
   while o != nil:
     var size: cint
     var keyPtr = o.getstring("key".cstring, addr size)
@@ -604,7 +605,7 @@ proc processKeys(client: Socket, params: seq[string]): void =
   sendStatus(client, Status.theEnd)
   discard destroy(cursor)
 
-proc processKeyValues(client: Socket, params: seq[string]): void = 
+proc processKeyValues(client: Socket, params: seq[string]): void =
   ## Command for fetching huge amount of key-values by key pattern:
   ## KEYVALUES [prefix]* [minimal unixtime]
   ##
@@ -633,8 +634,8 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
     discard o.setstring("prefix".cstring, addr pattern[0], (pattern.len).cint)
   o = cursor.get(o)
 
-  var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1) 
-  var bufferPos = 0 
+  var bufferLen = (20 + keyMaxSize + valueMaxSize) * min(cmdGetBatchSize, params.len - 1)
+  var bufferPos = 0
   var buffer = cast[ptr array[0, char]](createU(char, bufferLen))
   var i = 0
 
@@ -648,7 +649,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
       bufferLen = max(bufferLen * 2, bufferLen + diff)
       buffer = resize(buffer, bufferLen)
 
-    var header1 = $Status.value & " " 
+    var header1 = $Status.value & " "
     var header2 = " 0 " & $valueSize & NL
     copyMem(addr buffer[bufferPos], header1.cstring, header1.len)
     bufferPos += header1.len
@@ -675,7 +676,7 @@ proc processKeyValues(client: Socket, params: seq[string]): void =
       finally:
         bufferPos = 0
     o = cursor.get(o)
-  
+
   let diff = GET_CMD_ENDING.len - (bufferLen - bufferPos)
   if diff > 0:
       bufferLen = bufferLen + diff
@@ -708,11 +709,11 @@ proc parseLine(client: Socket, config: Config, line: string):bool =
       if params.len > 1 and params[1].contains('*'):
         processKeyValues(client, params)
       elif params.len == 2 and params[1] == "status":
-        processStat(client, true)  
+        processStat(client, true)
       else:
         processGet(client,params)
     of $Cmd.cmdDelete:
-      processDelete(client, config, params)  
+      processDelete(client, config, params)
     of $Cmd.cmdEcho:
       client.sendString(line & NL)
     of $Cmd.cmdStat:
@@ -771,7 +772,7 @@ proc processClient(client:Socket, config: Config) =
     except:
       debug("exception in readline:")
       debug($client.getSocketError())
-      break  
+      break
     # dont process data if die cmd
     {.locks: [glock].}:
       if die:
@@ -804,15 +805,15 @@ proc syncWithMaster(masterAddress: string, masterPort: int) =
       except:
         debug("err in sync")
         break
-      
+
       let diff = size - bufferLen
       if diff > 0:
         bufferLen = max(bufferLen * 2, bufferLen + diff)
         buffer = resize(buffer, bufferLen)
-      
+
       let readBytes = socket.recv(buffer, size)
       socket.skip(2) # NL
-      
+
       # write kv
       var o = document(db)
       discard o.setstring("key".cstring, addr key[0], (key.len).cint)
@@ -886,7 +887,7 @@ proc readCfg*():Config  =
   ## read sophia and server params from config.json
   ## full list of commands see in sophia doc
   ##
-  ## .. code-block:: Nim  
+  ## .. code-block:: Nim
   ##    {
   ##    "address": "127.0.0.1",
   ##    "port": 11213,
@@ -960,7 +961,7 @@ proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
     while true:
       var msg = replicationChannel.recv()
       try:
-        let status = 
+        let status =
           case msg.cmd:
             of Cmd.cmdSet:
               socket.setNoreply(msg.key, msg.value)
@@ -973,7 +974,7 @@ proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
           debug("Replica connection error, reconnect...")
           socket = newClient(replicaAddr.host, replicaAddr.port)
       except IOError:
-        # TODO: looks like replica is down. 
+        # TODO: looks like replica is down.
         # Save all messages to the disk and resend they after successfull connection
         debug("Replica communication IO error, reconnect...")
         socket = newClient(replicaAddr.host, replicaAddr.port)
@@ -981,7 +982,7 @@ proc replicationThread(replicaAddr: tuple[host: string, port: int]): void =
     let
       e = getCurrentException()
       msg = getCurrentExceptionMsg()
-    debug("Replication thread failed with exception " & repr(e) & " with message: " & msg)      
+    debug("Replication thread failed with exception " & repr(e) & " with message: " & msg)
 
 proc serve*(conf:Config) =
   ## run server with Config
@@ -997,7 +998,7 @@ proc serve*(conf:Config) =
   server.socket = createSocket()
   setSockOpt(server.socket, OptReuseAddr, true)
   setSockOpt(server.socket, OptReusePort, true)
-  
+
   server.socket.bindAddr(Port(conf.port),conf.address)
   server.socket.listen()
   echo("Server started on " & conf.address & ":" & $conf.port)

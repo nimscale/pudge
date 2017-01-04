@@ -15,7 +15,7 @@
   "sophiaParams": [
     {
       "key": "sophia.path",
-      "val": "./sophia"
+      "val": "/opt/var/pudge"
     },
     {
       "key": "db",
